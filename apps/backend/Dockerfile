@@ -49,6 +49,8 @@ RUN chown -R medusa:medusa /app/apps/backend
 USER medusa
 COPY --from=installer /app .
 
+ENV DATABASE_URL="postgres://postgres:Ask4help@localhost:5432/db212"
+
 WORKDIR /app/apps/backend
 
 RUN yarn db:migrate
