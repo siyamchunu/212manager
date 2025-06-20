@@ -83,15 +83,24 @@ jobs:
             echo "Installing dependencies..."
             yarn install --frozen-lockfile
             
-            echo "Running database migrations..."
+            # --- Backend Setup ---
+            # Navigate to the backend app directory to perform build and migrations
             cd $APP_DIR/apps/backend
+
+            echo "Creating .env file..."
             cat <<'EOF' > .env
             ${{ secrets.BACKEND_ENV_PROD }}
             EOF
+
+            echo "Building backend on server (ensures consistency for subsequent steps)..."
+            yarn build
+
+            echo "Running database migrations..."
             yarn db:migrate
             
-            echo "Running post-migration scripts (codegen, etc.)..."
+            # --- Root-level Scripts ---
             cd $APP_DIR
+            echo "Running post-build scripts (codegen, etc.)..."
             yarn codegen
             yarn generate:oas
             
