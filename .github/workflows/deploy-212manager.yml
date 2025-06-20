@@ -3,9 +3,10 @@ name: Deploy Backend
 on:
   push:
     branches:
-      - main # Or your primary deployment branch
+      - main
     paths: # Only run if files in these paths change
-      - '212manager/apps/backend/**'
+      - 'apps/backend/**' # Corrected path, assuming 'apps' is at the project root
+      - 'packages/**'     # Trigger if shared packages change
       - '.github/workflows/deploy-212manager.yml'
   workflow_dispatch: # Allows manual triggering
 
@@ -20,54 +21,119 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20' # Or your preferred Node.js version
-          cache: 'yarn'
+          cache: 'yarn' # Cache yarn dependencies
 
-      - name: Install Dependencies
+      - name: Install Root Dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Build Backend
-        run: yarn build
-        working-directory: apps/backend
+      - name: Build All Workspaces (inc. dependencies like @mercurjs/http-client)
+        run: yarn build # This should run "turbo run build" from the root package.json
 
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3 # Or latest version
+      # The `yarn build` at the root (turbo run build) should ideally handle
+      # building the Medusa backend as well if apps/backend/package.json has a "build" script.
+      # If `turbo run build` doesn't fully build the Medusa admin, explicitly build it:
+      - name: Build Medusa Backend (Server & Admin)
+        run: yarn workspace @mercurjs/backend build # Assumes apps/backend is named @mercurjs/backend
+                                                 # Or: cd apps/backend && yarn build
+
+      - name: Prepare Artifacts for Deployment
+        run: |
+          mkdir -p artifact/apps/backend
+          # Copy Medusa server build output
+          cp -R apps/backend/dist artifact/apps/backend/
+          
+          # Copy Medusa admin build output (standard is .medusa/build)
+          # The build command `medusa build && ln -s .medusa/server/public/ public` implies .medusa/server/public
+          # We need the actual files, not the symlink.
+          if [ -d "apps/backend/.medusa/server/public" ]; then
+            mkdir -p artifact/apps/backend/admin-public
+            cp -R apps/backend/.medusa/server/public/* artifact/apps/backend/admin-public/
+            echo "Copied admin from apps/backend/.medusa/server/public/"
+          elif [ -d "apps/backend/.medusa/build" ]; then
+            mkdir -p artifact/apps/backend/admin-public
+            cp -R apps/backend/.medusa/build/* artifact/apps/backend/admin-public/
+            echo "Copied admin from apps/backend/.medusa/build/"
+          else
+            echo "Warning: Medusa admin build directory not found at expected locations."
+          fi
+
+          cp apps/backend/package.json artifact/apps/backend/
+          if [ -f "apps/backend/medusa-config.js" ]; then
+            cp apps/backend/medusa-config.js artifact/apps/backend/
+          fi
+          # Add any other necessary runtime config files from apps/backend here
+          
+          # Copy root files needed on server for commands like `yarn codegen`
+          cp package.json artifact/
+          cp yarn.lock artifact/
+          
+          echo "Artifacts prepared:"
+          ls -R artifact
+
+      - name: Deploy Artifacts to EC2
+        uses: appleboy/scp-action@v0.1.7 # Use a specific version
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          key: ${{ secrets.EC2_SSH_KEY }} # Corrected secret name
+          source: "artifact/*" # Copies contents of artifact directory
+          target: "/var/www/212manager-app/deploy_temp"
+          strip_components: 1 # Removes the 'artifact' directory itself from the target path
+
+      - name: Execute Deployment Script on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        working-directory: apps/backend
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }} # Corrected secret name
           script: |
             set -e # Exit on error
             echo "Deploying backend to /var/www/212manager-app/212manager..."
-            cd /var/www/212manager-app/212manager
+            APP_DIR="/var/www/212manager-app/212manager"
+            DEPLOY_TEMP_DIR="/var/www/212manager-app/deploy_temp"
             
-            # Create a temporary directory for the deployment
-            mkdir -p deploy
+            cd $APP_DIR
             
-            # Copy only the necessary build artifacts
-            cp -r apps/backend/dist deploy/backend
-            cp apps/backend/package.json deploy/backend/
-            cp yarn.lock deploy/
-            cp package.json deploy/
+            echo "Cleaning up old backend and root package files..."
+            rm -rf $APP_DIR/apps/backend/*
+            # Ensure apps/backend directory exists
+            mkdir -p $APP_DIR/apps/backend
             
-            # Remove existing application files
-            rm -rf apps/backend
+            echo "Moving new build into place..."
+            cp -R $DEPLOY_TEMP_DIR/apps/backend/* $APP_DIR/apps/backend/
+            # If admin was copied to admin-public, move its contents to public
+            if [ -d "$APP_DIR/apps/backend/admin-public" ]; then
+              mkdir -p $APP_DIR/apps/backend/public
+              cp -R $APP_DIR/apps/backend/admin-public/* $APP_DIR/apps/backend/public/
+              rm -rf $APP_DIR/apps/backend/admin-public
+            fi
+
+            cp $DEPLOY_TEMP_DIR/package.json $APP_DIR/
+            cp $DEPLOY_TEMP_DIR/yarn.lock $APP_DIR/
             
-            # Move the build artifacts to the correct location
-            mv deploy/backend apps/
-            mv deploy/yarn.lock .
-            mv deploy/package.json .
+            echo "Installing root dependencies for server-side scripts..."
+            yarn install --frozen-lockfile # For root scripts like codegen
             
             echo "Running database migrations..."
-            yarn db:migrate
-            
-            # echo "Generating OpenAPI specification..." # Optional
-            # yarn generate:oas
+            cd $APP_DIR/apps/backend
+            echo "${{ secrets.BACKEND_ENV_PROD }}" > .env
+            yarn install --production --frozen-lockfile # Install backend prod dependencies
+            yarn db:migrate # Assumes this script is in apps/backend/package.json (e.g., "medusa db:migrate")
             
             echo "Running codegen..." # Optional
+            cd $APP_DIR # Back to project root
             yarn codegen
             
+            echo "Generating OpenAPI specification..." # Optional, if needed on server
+            yarn generate:oas
+            
             echo "Restarting PM2 process for mercur-api..."
-            pm2 restart mercur-api
+            pm2 restart mercur-api || pm2 start $APP_DIR/apps/backend/dist/main.js --name mercur-api # Start if not already running
             pm2 save
+            
             echo "Backend deployment complete."
             pm2 list
+
+            echo "Cleaning up temporary deployment directory on EC2..."
+            rm -rf $DEPLOY_TEMP_DIR
