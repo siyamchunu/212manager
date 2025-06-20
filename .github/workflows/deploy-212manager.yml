@@ -6,7 +6,7 @@ on:
       - main # Or your primary deployment branch
     paths: # Only run if files in these paths change
       - '212manager/apps/backend/**'
-      - '.github/workflows/deploy-backend.yml'
+      - '.github/workflows/deploy-212manager.yml'
   workflow_dispatch: # Allows manual triggering
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
 
       - name: Build Backend
         run: yarn build
-        working-directory: 212manager/apps/backend
+        working-directory: apps/backend
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3 # Or latest version
@@ -44,10 +44,10 @@ jobs:
             mkdir -p deploy
             
             # Copy only the necessary build artifacts
-            cp -r 212manager/apps/backend/dist deploy/backend
-            cp 212manager/apps/backend/package.json deploy/backend/
-            cp 212manager/yarn.lock deploy/
-            cp 212manager/package.json deploy/
+            cp -r apps/backend/dist deploy/backend
+            cp apps/backend/package.json deploy/backend/
+            cp yarn.lock deploy/
+            cp package.json deploy/
             
             # Remove existing application files
             rm -rf apps/backend
@@ -63,8 +63,7 @@ jobs:
             # echo "Generating OpenAPI specification..." # Optional
             # yarn generate:oas
             
-            echo "Running codegen in root..." # Optional
-            cd ../.. # Back to /var/www/212manager-app/212manager
+            echo "Running codegen..." # Optional
             yarn codegen
             
             echo "Restarting PM2 process for mercur-api..."
