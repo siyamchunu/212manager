@@ -85,7 +85,9 @@ jobs:
             
             echo "Running database migrations..."
             cd $APP_DIR/apps/backend
-            echo "${{ secrets.BACKEND_ENV_PROD }}" > .env
+            cat <<'EOF' > .env
+            ${{ secrets.BACKEND_ENV_PROD }}
+            EOF
             yarn db:migrate
             
             echo "Running post-migration scripts (codegen, etc.)..."
