@@ -32,9 +32,8 @@ jobs:
       # The `yarn build` at the root (turbo run build) should ideally handle
       # building the Medusa backend as well if apps/backend/package.json has a "build" script.
       # If `turbo run build` doesn't fully build the Medusa admin, explicitly build it:
-      - name: Build Medusa Backend (Server & Admin)
-        run: yarn workspace @mercurjs/backend build # Assumes apps/backend is named @mercurjs/backend
-                                                 # Or: cd apps/backend && yarn build
+      - name: Build Medusa Backend (Server & Admin) # Includes Medusa admin
+        run: cd apps/backend && yarn build
 
       - name: Prepare Artifacts for Deployment
         run: |
@@ -75,7 +74,7 @@ jobs:
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }} # Corrected secret name
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }} # Consistent secret name for SSH private key
           source: "artifact/*" # Copies contents of artifact directory
           target: "/var/www/212manager-app/deploy_temp"
           strip_components: 1 # Removes the 'artifact' directory itself from the target path
