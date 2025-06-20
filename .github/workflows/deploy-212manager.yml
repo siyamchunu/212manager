@@ -45,6 +45,7 @@ jobs:
           cp -R packages artifact/
           cp package.json artifact/
           cp yarn.lock artifact/
+          cp turbo.json artifact/
           
           echo "Artifacts prepared in artifact/:"
           ls -R artifact
