@@ -157,8 +157,7 @@ jobs:
             echo "Running database migrations..."
             cd $APP_DIR/apps/backend
             echo "${{ secrets.BACKEND_ENV_PROD }}" > .env
-            yarn install --production --frozen-lockfile # Install backend prod dependencies
-            yarn db:migrate # Assumes this script is in apps/backend/package.json (e.g., "medusa db:migrate")
+            yarn db:migrate # Run migrations. This will use the root node_modules where ts-node is installed.
             
             echo "Running codegen..." # Optional
             cd $APP_DIR # Back to project root
