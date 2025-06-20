@@ -37,75 +37,14 @@ jobs:
 
       - name: Prepare Artifacts for Deployment
         run: |
-          mkdir -p artifact/apps/backend # Root for backend artifacts
-
-          # --- Handle Server Build (Target: artifact/apps/backend/dist) ---
-          SERVER_ARTIFACT_DIST_DIR="artifact/apps/backend/dist"
-          mkdir -p "$SERVER_ARTIFACT_DIST_DIR"
-          
-          SERVER_BUILD_SOURCE_DIR=""
-          if [ -d "apps/backend/dist" ]; then
-            echo "Found server build output at apps/backend/dist/"
-            SERVER_BUILD_SOURCE_DIR="apps/backend/dist"
-          elif [ -d "apps/backend/.medusa/server" ]; then
-            # Check if .medusa/server contains actual server files (like main.js)
-            # and not just a 'public' folder for admin.
-            if [ -f "apps/backend/.medusa/server/main.js" ] || \
-               [ "$(find apps/backend/.medusa/server -mindepth 1 -maxdepth 1 ! -name 'public' -print -quit)" ]; then
-              echo "Found server build output at apps/backend/.medusa/server/"
-              SERVER_BUILD_SOURCE_DIR="apps/backend/.medusa/server"
-            else
-              echo "apps/backend/.medusa/server exists but doesn't appear to contain main server files (e.g., missing main.js or only has a public subdir)."
-            fi
-          fi
-
-          if [ -n "$SERVER_BUILD_SOURCE_DIR" ]; then
-            echo "Copying server build from $SERVER_BUILD_SOURCE_DIR to $SERVER_ARTIFACT_DIST_DIR/"
-            # Copy contents, excluding 'public' if it's from .medusa/server to avoid conflict with separate admin handling
-            if [ "$SERVER_BUILD_SOURCE_DIR" = "apps/backend/.medusa/server" ]; then
-              rsync -av --exclude='public/' "$SERVER_BUILD_SOURCE_DIR/" "$SERVER_ARTIFACT_DIST_DIR/"
-            else
-              rsync -av "$SERVER_BUILD_SOURCE_DIR/" "$SERVER_ARTIFACT_DIST_DIR/"
-            fi
-          else
-            echo "Error: Medusa server build output (for 'dist' directory) not found in apps/backend/dist or apps/backend/.medusa/server."
-            echo "Listing contents of apps/backend/:"
-            ls -la apps/backend/
-            if [ -d "apps/backend/.medusa" ]; then
-              echo "Listing contents of apps/backend/.medusa/:"
-              ls -la apps/backend/.medusa/
-            fi
-            exit 1
-          fi
-
-          # --- Handle Admin Build (Target: artifact/apps/backend/admin-public) ---
-          ADMIN_ARTIFACT_PUBLIC_DIR="artifact/apps/backend/admin-public"
-          
-          ADMIN_BUILD_SOURCE_DIR=""
-          if [ -d "apps/backend/.medusa/server/public" ]; then
-            echo "Found admin build at apps/backend/.medusa/server/public/"
-            ADMIN_BUILD_SOURCE_DIR="apps/backend/.medusa/server/public"
-          elif [ -d "apps/backend/.medusa/build" ]; then
-            echo "Found admin build at apps/backend/.medusa/build/"
-            ADMIN_BUILD_SOURCE_DIR="apps/backend/.medusa/build"
-          fi
-
-          if [ -n "$ADMIN_BUILD_SOURCE_DIR" ]; then
-            mkdir -p "$ADMIN_ARTIFACT_PUBLIC_DIR"
-            echo "Copying admin build from $ADMIN_BUILD_SOURCE_DIR to $ADMIN_ARTIFACT_PUBLIC_DIR/"
-            rsync -av "$ADMIN_BUILD_SOURCE_DIR/" "$ADMIN_ARTIFACT_PUBLIC_DIR/"
-          else
-            echo "Warning: Medusa admin build directory not found at expected locations (apps/backend/.medusa/server/public or apps/backend/.medusa/build)."
-          fi
-
-          # --- Copy Package Files ---
-          cp apps/backend/package.json artifact/apps/backend/
-          if [ -f "apps/backend/medusa-config.js" ]; then
-            cp apps/backend/medusa-config.js artifact/apps/backend/
-          fi
-          
-          cp package.json artifact/ # Root package.json
-          cp yarn.lock artifact/  # Root yarn.lock
+          echo "Creating a self-contained deployment package..."
+          mkdir -p artifact
+          # Copy all necessary source files, package definitions, and the built code.
+          # This makes the artifact self-sufficient for running migrations on the server.
+          cp -R apps artifact/
+          cp -R packages artifact/
+          cp package.json artifact/
+          cp yarn.lock artifact/
           
           echo "Artifacts prepared in artifact/:"
           ls -R artifact
@@ -116,9 +55,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }} # Consistent secret name for SSH private key
-          source: "artifact/*" # Copies contents of artifact directory
+          source: "artifact/" # Copies the artifact directory
           target: "/var/www/212manager-app/deploy_temp"
-          strip_components: 1 # Removes the 'artifact' directory itself from the target path
+          rm: true # Remove the artifact directory on the server after copying
 
       - name: Execute Deployment Script on EC2
         uses: appleboy/ssh-action@v1.0.3
@@ -130,40 +69,28 @@ jobs:
             set -e # Exit on error
             echo "Deploying backend to /var/www/212manager-app/212manager..."
             APP_DIR="/var/www/212manager-app/212manager"
-            DEPLOY_TEMP_DIR="/var/www/212manager-app/deploy_temp"
+            DEPLOY_SOURCE_DIR="/var/www/212manager-app/deploy_temp/artifact"
             
+            # Use rsync to efficiently update the application directory.
+            # This is like a smart 'cp' that only changes what's necessary.
+            echo "Syncing new version to the application directory..."
+            rsync -a --delete $DEPLOY_SOURCE_DIR/ $APP_DIR/
+            
+            # The application is now fully updated with source and built code.
+            # Now, run the necessary server-side commands.
             cd $APP_DIR
             
-            echo "Cleaning up old backend and root package files..."
-            rm -rf $APP_DIR/apps/backend/*
-            # Ensure apps/backend directory exists
-            mkdir -p $APP_DIR/apps/backend
-            
-            echo "Moving new build into place..."
-            cp -R $DEPLOY_TEMP_DIR/apps/backend/* $APP_DIR/apps/backend/
-            # If admin was copied to admin-public, move its contents to public
-            if [ -d "$APP_DIR/apps/backend/admin-public" ]; then
-              mkdir -p $APP_DIR/apps/backend/public
-              cp -R $APP_DIR/apps/backend/admin-public/* $APP_DIR/apps/backend/public/
-              rm -rf $APP_DIR/apps/backend/admin-public
-            fi
-
-            cp $DEPLOY_TEMP_DIR/package.json $APP_DIR/
-            cp $DEPLOY_TEMP_DIR/yarn.lock $APP_DIR/
-            
-            echo "Installing root dependencies for server-side scripts..."
-            yarn install --frozen-lockfile # For root scripts like codegen
+            echo "Installing dependencies..."
+            yarn install --frozen-lockfile
             
             echo "Running database migrations..."
             cd $APP_DIR/apps/backend
             echo "${{ secrets.BACKEND_ENV_PROD }}" > .env
-            yarn db:migrate # Run migrations. This will use the root node_modules where ts-node is installed.
+            yarn db:migrate
             
-            echo "Running codegen..." # Optional
-            cd $APP_DIR # Back to project root
+            echo "Running post-migration scripts (codegen, etc.)..."
+            cd $APP_DIR
             yarn codegen
-            
-            echo "Generating OpenAPI specification..." # Optional, if needed on server
             yarn generate:oas
             
             echo "Restarting PM2 process for mercur-api..."
@@ -174,4 +101,4 @@ jobs:
             pm2 list
 
             echo "Cleaning up temporary deployment directory on EC2..."
-            rm -rf $DEPLOY_TEMP_DIR
+            rm -rf /var/www/212manager-app/deploy_temp
