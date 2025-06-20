@@ -109,6 +109,28 @@ jobs:
             pm2 restart mercur-api || pm2 start $APP_DIR/apps/backend/dist/main.js --name mercur-api # Start if not already running
             pm2 save
             
+            echo "Waiting for application to become healthy..."
+            # Adjust HEALTH_CHECK_URL, MAX_RETRIES, and RETRY_DELAY as per your application's needs
+            # Assuming your backend listens on port 9000 and has a health endpoint like /health
+            HEALTH_CHECK_URL="http://localhost:9000/health" # <--- IMPORTANT: Update this to your actual health endpoint
+            MAX_RETRIES=15 # Number of times to check
+            RETRY_DELAY=10 # Seconds to wait between retries
+
+            for i in $(seq 1 $MAX_RETRIES); do
+              STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_CHECK_URL || echo "000")
+              if [ "$STATUS_CODE" -eq 200 ]; then
+                echo "Application is healthy (HTTP $STATUS_CODE)."
+                break
+              else
+                echo "Application not yet healthy (HTTP $STATUS_CODE). Retrying in $RETRY_DELAY seconds... ($i/$MAX_RETRIES)"
+                sleep $RETRY_DELAY
+              fi
+              if [ "$i" -eq "$MAX_RETRIES" ]; then
+                echo "Error: Application did not become healthy after $MAX_RETRIES retries. Deployment failed."
+                exit 1 # Fail the deployment
+              fi
+            done
+
             echo "Backend deployment complete."
             pm2 list
 
