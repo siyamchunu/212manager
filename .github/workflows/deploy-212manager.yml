@@ -82,7 +82,6 @@ jobs:
 
       - name: Execute Deployment Script on EC2
         uses: appleboy/ssh-action@v1.0.3
-        working-directory: apps/backend
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
