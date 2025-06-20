@@ -1,0 +1,74 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main # Or your primary deployment branch
+    paths: # Only run if files in these paths change
+      - '212manager/apps/backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Or your preferred Node.js version
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build Backend
+        run: yarn build
+        working-directory: 212manager/apps/backend
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3 # Or latest version
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e # Exit on error
+            echo "Deploying backend to /var/www/212manager-app/212manager..."
+            cd /var/www/212manager-app/212manager
+            
+            # Create a temporary directory for the deployment
+            mkdir -p deploy
+            
+            # Copy only the necessary build artifacts
+            cp -r 212manager/apps/backend/dist deploy/backend
+            cp 212manager/apps/backend/package.json deploy/backend/
+            cp 212manager/yarn.lock deploy/
+            cp 212manager/package.json deploy/
+            
+            # Remove existing application files
+            rm -rf apps/backend
+            
+            # Move the build artifacts to the correct location
+            mv deploy/backend apps/
+            mv deploy/yarn.lock .
+            mv deploy/package.json .
+            
+            echo "Running database migrations..."
+            yarn db:migrate
+            
+            # echo "Generating OpenAPI specification..." # Optional
+            # yarn generate:oas
+            
+            echo "Running codegen in root..." # Optional
+            cd ../.. # Back to /var/www/212manager-app/212manager
+            yarn codegen
+            
+            echo "Restarting PM2 process for mercur-api..."
+            pm2 restart mercur-api
+            pm2 save
+            echo "Backend deployment complete."
+            pm2 list
