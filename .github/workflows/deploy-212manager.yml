@@ -37,36 +37,77 @@ jobs:
 
       - name: Prepare Artifacts for Deployment
         run: |
-          mkdir -p artifact/apps/backend
-          # Copy Medusa server build output
-          cp -R apps/backend/dist artifact/apps/backend/
+          mkdir -p artifact/apps/backend # Root for backend artifacts
+
+          # --- Handle Server Build (Target: artifact/apps/backend/dist) ---
+          SERVER_ARTIFACT_DIST_DIR="artifact/apps/backend/dist"
+          mkdir -p "$SERVER_ARTIFACT_DIST_DIR"
           
-          # Copy Medusa admin build output (standard is .medusa/build)
-          # The build command `medusa build && ln -s .medusa/server/public/ public` implies .medusa/server/public
-          # We need the actual files, not the symlink.
-          if [ -d "apps/backend/.medusa/server/public" ]; then
-            mkdir -p artifact/apps/backend/admin-public
-            cp -R apps/backend/.medusa/server/public/* artifact/apps/backend/admin-public/
-            echo "Copied admin from apps/backend/.medusa/server/public/"
-          elif [ -d "apps/backend/.medusa/build" ]; then
-            mkdir -p artifact/apps/backend/admin-public
-            cp -R apps/backend/.medusa/build/* artifact/apps/backend/admin-public/
-            echo "Copied admin from apps/backend/.medusa/build/"
-          else
-            echo "Warning: Medusa admin build directory not found at expected locations."
+          SERVER_BUILD_SOURCE_DIR=""
+          if [ -d "apps/backend/dist" ]; then
+            echo "Found server build output at apps/backend/dist/"
+            SERVER_BUILD_SOURCE_DIR="apps/backend/dist"
+          elif [ -d "apps/backend/.medusa/server" ]; then
+            # Check if .medusa/server contains actual server files (like main.js)
+            # and not just a 'public' folder for admin.
+            if [ -f "apps/backend/.medusa/server/main.js" ] || \
+               [ "$(find apps/backend/.medusa/server -mindepth 1 -maxdepth 1 ! -name 'public' -print -quit)" ]; then
+              echo "Found server build output at apps/backend/.medusa/server/"
+              SERVER_BUILD_SOURCE_DIR="apps/backend/.medusa/server"
+            else
+              echo "apps/backend/.medusa/server exists but doesn't appear to contain main server files (e.g., missing main.js or only has a public subdir)."
+            fi
           fi
 
+          if [ -n "$SERVER_BUILD_SOURCE_DIR" ]; then
+            echo "Copying server build from $SERVER_BUILD_SOURCE_DIR to $SERVER_ARTIFACT_DIST_DIR/"
+            # Copy contents, excluding 'public' if it's from .medusa/server to avoid conflict with separate admin handling
+            if [ "$SERVER_BUILD_SOURCE_DIR" = "apps/backend/.medusa/server" ]; then
+              rsync -av --exclude='public/' "$SERVER_BUILD_SOURCE_DIR/" "$SERVER_ARTIFACT_DIST_DIR/"
+            else
+              rsync -av "$SERVER_BUILD_SOURCE_DIR/" "$SERVER_ARTIFACT_DIST_DIR/"
+            fi
+          else
+            echo "Error: Medusa server build output (for 'dist' directory) not found in apps/backend/dist or apps/backend/.medusa/server."
+            echo "Listing contents of apps/backend/:"
+            ls -la apps/backend/
+            if [ -d "apps/backend/.medusa" ]; then
+              echo "Listing contents of apps/backend/.medusa/:"
+              ls -la apps/backend/.medusa/
+            fi
+            exit 1
+          fi
+
+          # --- Handle Admin Build (Target: artifact/apps/backend/admin-public) ---
+          ADMIN_ARTIFACT_PUBLIC_DIR="artifact/apps/backend/admin-public"
+          
+          ADMIN_BUILD_SOURCE_DIR=""
+          if [ -d "apps/backend/.medusa/server/public" ]; then
+            echo "Found admin build at apps/backend/.medusa/server/public/"
+            ADMIN_BUILD_SOURCE_DIR="apps/backend/.medusa/server/public"
+          elif [ -d "apps/backend/.medusa/build" ]; then
+            echo "Found admin build at apps/backend/.medusa/build/"
+            ADMIN_BUILD_SOURCE_DIR="apps/backend/.medusa/build"
+          fi
+
+          if [ -n "$ADMIN_BUILD_SOURCE_DIR" ]; then
+            mkdir -p "$ADMIN_ARTIFACT_PUBLIC_DIR"
+            echo "Copying admin build from $ADMIN_BUILD_SOURCE_DIR to $ADMIN_ARTIFACT_PUBLIC_DIR/"
+            rsync -av "$ADMIN_BUILD_SOURCE_DIR/" "$ADMIN_ARTIFACT_PUBLIC_DIR/"
+          else
+            echo "Warning: Medusa admin build directory not found at expected locations (apps/backend/.medusa/server/public or apps/backend/.medusa/build)."
+          fi
+
+          # --- Copy Package Files ---
           cp apps/backend/package.json artifact/apps/backend/
           if [ -f "apps/backend/medusa-config.js" ]; then
             cp apps/backend/medusa-config.js artifact/apps/backend/
           fi
-          # Add any other necessary runtime config files from apps/backend here
           
-          # Copy root files needed on server for commands like `yarn codegen`
-          cp package.json artifact/
-          cp yarn.lock artifact/
+          cp package.json artifact/ # Root package.json
+          cp yarn.lock artifact/  # Root yarn.lock
           
-          echo "Artifacts prepared:"
+          echo "Artifacts prepared in artifact/:"
           ls -R artifact
 
       - name: Deploy Artifacts to EC2
