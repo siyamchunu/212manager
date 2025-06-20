@@ -102,8 +102,8 @@ jobs:
             # --- Root-level Scripts ---
             cd $APP_DIR
             echo "Running post-build scripts (codegen, etc.)..."
-            yarn codegen
             yarn generate:oas
+            yarn codegen
             
             echo "Restarting PM2 process for mercur-api..."
             pm2 restart mercur-api || pm2 start $APP_DIR/apps/backend/dist/main.js --name mercur-api # Start if not already running
